@@ -1,0 +1,31 @@
+{
+  "name": "Firebase Portal Explorer",
+  "short_name": "Firebase Portal",
+  "description": "Portail portable pour explorer et synchroniser vos projets Firebase.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "orientation": "portrait",
+  "categories": ["developer", "utilities"],
+  "icons": [
+    {
+      "src": "/pwa_icon.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa_icon.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa_icon.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "maskable"
+    }
+  ]
+}

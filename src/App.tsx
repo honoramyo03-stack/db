@@ -33,7 +33,9 @@ import {
   HelpCircle,
   Code,
   Sun,
-  Moon
+  Moon,
+  Download,
+  Share
 } from 'lucide-react';
 import { auth } from './firebase.ts';
 import { FirebaseProject, WebApp, AndroidApp, IosApp, WebAppConfig, FirestoreDatabase } from './types.ts';
@@ -80,6 +82,53 @@ export default function App() {
 
   // UI status
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Progressive Web App (PWA) installation states & detection
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showInstallBanner, setShowInstallBanner] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
+  const [showIosTutorial, setShowIosTutorial] = useState(false);
+
+  useEffect(() => {
+    // 1. Check if already running in standalone (PWA) mode
+    const standaloneMode = window.matchMedia('(display-mode: standalone)').matches || 
+                          (navigator as any).standalone === true;
+    setIsStandalone(!!standaloneMode);
+
+    // 2. Detect if device is Apple iOS (iPhone/iPad)
+    const userAgent = window.navigator.userAgent.toLowerCase();
+    const isAppleIos = /iphone|ipad|ipod/.test(userAgent);
+    setIsIOS(isAppleIos);
+
+    // 3. Store deferred prompt when beforeinstallprompt fires (Chrome, Edge, Samsung Internet, Firefox on Android)
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      // Only show install offering if not already installed as PWA
+      if (!standaloneMode) {
+        setShowInstallBanner(true);
+      }
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log(`PWA installation choice: ${outcome}`);
+    if (outcome === 'accepted') {
+      setIsStandalone(true);
+      setShowInstallBanner(false);
+    }
+    setDeferredPrompt(null);
+  };
 
   // Track Auth changes on mount
   useEffect(() => {
@@ -401,6 +450,101 @@ export default function App() {
       {/* MAIN LAYOUT */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
         
+        {/* PWA INSTALLATION PROMPTS */}
+        {!isStandalone && (
+          <div className="mb-6 space-y-4" id="pwa-install-wrapper">
+            {/* Standard Install Banner (Android, Chrome Desktop/Mobile, Firefox Android, Edge) */}
+            {showInstallBanner && deferredPrompt && (
+              <div className={`p-5 rounded-3xl border shadow-lg flex flex-col md:flex-row items-center justify-between gap-4 transition-all duration-300 ${
+                isDark 
+                  ? 'bg-slate-900 border-amber-500/20 text-slate-100 shadow-amber-500/[0.02]' 
+                  : 'bg-white border-amber-200 text-slate-800 shadow-amber-100/30'
+              }`} id="android-pwa-banner">
+                <div className="flex items-center gap-4 text-center md:text-left flex-col md:flex-row">
+                  <div className="bg-amber-500 text-slate-950 p-2.5 rounded-2xl shadow-md shrink-0 flex items-center justify-center animate-bounce">
+                    <Smartphone className="h-5.5 w-5.5" />
+                  </div>
+                  <div>
+                    <h4 className={`text-sm sm:text-base font-bold flex items-center gap-1.5 justify-center md:justify-start ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                      Installer l'application native <span className="text-[9px] bg-amber-500/10 text-amber-500 dark:text-amber-400 border border-amber-200/20 px-1.5 py-0.5 rounded-md font-mono tracking-widest font-bold uppercase">Recommandé</span>
+                    </h4>
+                    <p className={`text-xs mt-1 max-w-xl ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                      Ajoutez l'application sur votre écran d'accueil mobile pour l'utiliser comme une application native. Plus rapide, sans barre de navigation navigateur, et accessible instantanément.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 w-full md:w-auto shrink-0 justify-center">
+                  <button
+                    onClick={handleInstallApp}
+                    className="flex-1 md:flex-initial py-2.5 px-5 bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold rounded-xl shadow-md hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <Download className="h-4 w-4 animate-pulse" /> Installer l'App
+                  </button>
+                  <button
+                    onClick={() => setShowInstallBanner(false)}
+                    className={`p-2.5 rounded-xl border cursor-pointer ${
+                      isDark ? 'border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800' : 'border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-100'
+                    }`}
+                    title="Fermer"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Apple iOS PWA Help Banner */}
+            {isIOS && (
+              <div className={`p-4 rounded-3xl border shadow-xs transition-all duration-300 ${
+                isDark ? 'bg-slate-900 border-slate-800 text-slate-150' : 'bg-white border-slate-150 text-slate-800'
+              }`} id="ios-pwa-banner">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex items-start gap-4">
+                    <div className="bg-amber-500/15 text-amber-500 dark:text-amber-400 p-2.5 rounded-2xl shrink-0 flex items-center justify-center">
+                      <Smartphone className="h-5.5 w-5.5" />
+                    </div>
+                    <div>
+                      <h4 className={`text-sm sm:text-base font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                        Ajouter sur votre iPhone / iPad
+                      </h4>
+                      <p className={`text-xs mt-0.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                        Utilisez l'application en mode plein écran sans le navigateur Safari.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowIosTutorial(!showIosTutorial)}
+                    className={`w-full sm:w-auto py-2 px-4 border text-xs font-semibold rounded-xl cursor-pointer flex items-center justify-center gap-1.5 transition-all ${
+                      showIosTutorial
+                        ? isDark ? 'bg-slate-800 border-slate-750 text-amber-450' : 'bg-slate-100 border-slate-300 text-amber-600'
+                        : isDark ? 'border-slate-800 bg-slate-950/40 hover:bg-slate-800 text-slate-300' : 'border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-750'
+                    }`}
+                  >
+                    <Info className="h-4 w-4" /> {showIosTutorial ? "Masquer l'aide" : "Comment installer ?"}
+                  </button>
+                </div>
+
+                {showIosTutorial && (
+                  <div className={`mt-4 pt-4 border-t space-y-3.5 text-xs ${isDark ? 'border-slate-800 text-slate-300' : 'border-slate-150 text-slate-650'}`}>
+                    <p className="font-semibold text-amber-500">Pour l'installer sous iOS (Safari) :</p>
+                    <ol className="list-decimal pl-5 space-y-2 leading-relaxed">
+                      <li>
+                        Appuyez sur le bouton de <span className="font-bold text-slate-100 dark:text-white inline-flex items-center gap-1 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700"><Share className="h-3 w-3.5 inline text-amber-400" /> Partager</span> dans le menu de navigation Safari (en bas de votre écran).
+                      </li>
+                      <li>
+                        Faites défiler le menu de partage vers le bas et sélectionnez <span className="font-bold text-slate-100 dark:text-white">Sur l'écran d'accueil</span> (ou <span className="font-bold text-slate-100 dark:text-white">Add to Home Screen</span>).
+                      </li>
+                      <li>
+                        Appuyez sur <span className="font-bold text-amber-500">Ajouter</span> en haut à droite. L'icône de l'application apparaîtra instantanément sur votre écran d'accueil mobile comme une application native !
+                      </li>
+                    </ol>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* LOGGED OUT WALL */}
         {!accessToken ? (
           <div className="max-w-xl mx-auto my-12" id="auth-wall">
