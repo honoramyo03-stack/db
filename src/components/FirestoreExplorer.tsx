@@ -126,7 +126,6 @@ export default function FirestoreExplorer({ accessToken, projectId, databaseId, 
   const [apiError, setApiError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [isDeletingCollection, setIsDeletingCollection] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
 
   // Editor states (Visual fields vs JSON text block editor)
@@ -172,7 +171,7 @@ export default function FirestoreExplorer({ accessToken, projectId, databaseId, 
 
       if (!response.ok) {
         if (response.status === 403) {
-          throw new Error("L'API Firestore a renvoyé un accès refusé (403). C'est normal si votre base de données est neuve : par défaut, Firestore bloque tous les accès externes. Veuillez activer le 'Mode Test' ou configurer des règles d'accès réelles de lecture/écriture (ex: 'allow read, write: if true;') dans la console Firebase (console.firebase.google.com) ou déployer votre fichier firestore.rules.");
+          throw new Error("L'API Firestore a renvoyé un accès refusé (403). Veuillez vous assurer que la base Firestore (default) existe et que vos règles de sécurité (firestore.rules) autorisent la lecture.");
         }
         if (response.status === 404) {
           throw new Error("Base de données Firestore non trouvée (404). Ce projet n'a peut-être pas encore initialisé Firestore.");
@@ -392,8 +391,7 @@ export default function FirestoreExplorer({ accessToken, projectId, databaseId, 
       });
 
       if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error?.message || `Erreur lors de la suppression du document (Code ${response.status})`);
+        throw new Error(`Erreur lors de la suppression du document (Code ${response.status})`);
       }
 
       // Remove from states
@@ -405,48 +403,6 @@ export default function FirestoreExplorer({ accessToken, projectId, databaseId, 
       setApiError(err.message || "Une erreur est survenue lors de la suppression.");
     } finally {
       setIsDeleting(false);
-    }
-  };
-
-  // Delete all documents inside the current collection to delete the collection itself
-  const handleDeleteCollection = async () => {
-    if (!selectedCollection || documents.length === 0) return;
-    if (!window.confirm(`Attention : cette action va supprimer DÉFINITIVEMENT tous les documents (${documents.length}) présents dans la collection "${selectedCollection}". Cela supprimera également la collection dans Firestore de manière irréversible. Voulez-vous continuer ?`)) {
-      return;
-    }
-
-    setIsDeletingCollection(true);
-    setApiError(null);
-
-    try {
-      // Loop over and delete documents sequentially
-      for (const doc of documents) {
-        const response = await fetch(`https://firestore.googleapis.com/v1/${doc.name}`, {
-          method: 'DELETE',
-          headers: {
-            'Authorization': `Bearer ${accessToken}`
-          }
-        });
-        if (!response.ok) {
-          const errJson = await response.json().catch(() => ({}));
-          const errMsg = errJson.error?.message || `Code ${response.status}`;
-          console.warn(`Impossible de supprimer le document ${doc.name}: ${errMsg}`);
-          throw new Error(`Impossible de vider complètement la collection: ${errMsg}`);
-        }
-      }
-      
-      setDocuments([]);
-      setSelectedDoc(null);
-      setSaveSuccess(false);
-      
-      // Refresh list of collections
-      await fetchCollectionsList();
-      setSelectedCollection('');
-    } catch (err: any) {
-      console.error(err);
-      setApiError(err.message || "Impossible de vider complètement la collection.");
-    } finally {
-      setIsDeletingCollection(false);
     }
   };
 
@@ -600,40 +556,12 @@ export default function FirestoreExplorer({ accessToken, projectId, databaseId, 
                 <span>Recherche de collections...</span>
               </div>
             ) : collections.length === 0 ? (
-              <div className={`border border-dashed p-4 rounded-xl text-center text-[11px] space-y-2.5 transition-all ${
+              <div className={`border border-dashed p-4 rounded-xl text-center text-[11px] space-y-1 transition-all ${
                 isDark ? 'bg-slate-950/45 border-slate-800 text-slate-500' : 'bg-slate-50 border-slate-200 text-slate-400'
               }`}>
                 <Info className="h-4 w-4 text-amber-500 mx-auto" />
-                <div className="space-y-1">
-                  <p className="font-bold text-slate-700 dark:text-slate-300">Aucune collection trouvée.</p>
-                  <p className="text-[10px] leading-relaxed">Firestore est vide ou configuré avec des règles de sécurité limitantes.</p>
-                </div>
-                
-                <div className="pt-1 space-y-1.5">
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Suggestions de départ :</p>
-                  <div className="flex flex-wrap gap-1.5 justify-center">
-                    {['users', 'tasks', 'messages', 'products'].map(col => (
-                      <button
-                        key={col}
-                        type="button"
-                        onClick={() => {
-                          setCustomCollectionInput(col);
-                          handleSelectCollection(col);
-                          if (!collections.includes(col)) {
-                            setCollections(prev => [...prev, col]);
-                          }
-                        }}
-                        className={`text-[10px] px-2 py-1 rounded-lg font-mono font-bold transition-all border cursor-pointer ${
-                          isDark 
-                            ? 'bg-slate-900 hover:bg-slate-850 border-slate-800 text-slate-300 hover:text-white' 
-                            : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700 hover:border-slate-350'
-                        }`}
-                      >
-                        +{col}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <p className="font-medium text-slate-600">Aucune collection racine listée automatiquement.</p>
+                <p>Saisissez un chemin manuel ci-dessus pour le forcer.</p>
               </div>
             ) : (
               collections.map((colName) => {
@@ -659,31 +587,20 @@ export default function FirestoreExplorer({ accessToken, projectId, databaseId, 
 
         {/* PANEL 2: DOCUMENTS LIST (cols 4-7) */}
         <div className="lg:col-span-4 p-5 flex flex-col space-y-4">
-          <div className="flex items-center justify-between gap-1 flex-wrap">
+          <div className="flex items-center justify-between gap-2 flex-wrap sm:flex-nowrap">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-widest font-mono shrink-0">
               Documents ({filteredDocs.length})
             </span>
             {selectedCollection && (
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={handleDeleteCollection}
-                  disabled={isDeletingCollection || documents.length === 0}
-                  className="text-[10px] bg-rose-500 hover:bg-rose-600 disabled:opacity-40 text-white px-2.5 py-1.5 rounded-xl font-bold flex items-center gap-1 transition-all cursor-pointer shadow-xs"
-                  title="Supprimer toute la collection"
-                >
-                  <Trash2 className="h-3 w-3" /> {isDeletingCollection ? 'Vider...' : 'Vider'}
-                </button>
-                <button
-                  onClick={() => {
-                    setIsCreatingDoc(true);
-                    setSelectedDoc(null);
-                  }}
-                  className="text-[10px] bg-amber-500 hover:bg-amber-600 text-slate-950 px-2.5 py-1.5 rounded-xl font-bold flex items-center gap-1 transition-all cursor-pointer shadow-xs"
-                >
-                  <Plus className="h-3 w-3" /> Nouveau
-                </button>
-              </div>
+              <button
+                onClick={() => {
+                  setIsCreatingDoc(true);
+                  setSelectedDoc(null);
+                }}
+                className="text-[10px] bg-amber-500 hover:bg-amber-600 text-slate-950 px-2.5 py-1.5 rounded-xl font-bold flex items-center gap-1 transition-all cursor-pointer shadow-xs shrink-0"
+              >
+                <Plus className="h-3 w-3" /> Nouveau Document
+              </button>
             )}
           </div>
 
