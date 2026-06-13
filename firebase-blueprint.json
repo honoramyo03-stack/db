@@ -1,0 +1,75 @@
+{
+  "entities": {
+    "Profile": {
+      "title": "Profile",
+      "description": "User profile with monthly savings goals",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email", "description": "The authenticated email address of the user" },
+        "savingsGoal": { "type": "number", "description": "Overall monthly savings target in Euros/local currency" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last modification timestamp" }
+      },
+      "required": ["email", "savingsGoal", "createdAt", "updatedAt"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "An expense or income transaction",
+      "type": "object",
+      "properties": {
+        "description": { "type": "string", "description": "Description of the operation" },
+        "amount": { "type": "number", "description": "The amount in Euros" },
+        "type": { "type": "string", "enum": ["charge", "revenue"], "description": "Whether the transaction is an expense (charge) or income (revenue)" },
+        "category": { "type": "string", "description": "Categorization of the transaction" },
+        "date": { "type": "string", "format": "date", "description": "The custom date of the transaction (YYYY-MM-DD)" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp when transaction was registered" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Timestamp when transaction was last modified" }
+      },
+      "required": ["description", "amount", "type", "category", "date", "createdAt", "updatedAt"]
+    },
+    "Budget": {
+      "title": "Budget",
+      "description": "Monthly budget limit per category",
+      "type": "object",
+      "properties": {
+        "category": { "type": "string", "description": "Category name for the budget" },
+        "monthlyLimit": { "type": "number", "description": "Maximum allowed spending limit per month" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp of creation" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Timestamp of last update" }
+      },
+      "required": ["category", "monthlyLimit", "createdAt", "updatedAt"]
+    },
+    "Alert": {
+      "title": "Alert",
+      "description": "Personalized savings and limit warnings",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Alert title" },
+        "message": { "type": "string", "description": "Alert descriptive message" },
+        "category": { "type": "string", "description": "Associated category or global" },
+        "type": { "type": "string", "enum": ["warning", "info"], "description": "Severity of the alert" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp of warning" },
+        "read": { "type": "boolean", "description": "Whether the alert has been acknowledged" }
+      },
+      "required": ["title", "message", "category", "type", "createdAt", "read"]
+    }
+  },
+  "firestore": {
+    "/profiles/{userId}": {
+      "schema": "#/entities/Profile",
+      "description": "User settings and saving goal"
+    },
+    "/profiles/{userId}/transactions/{transactionId}": {
+      "schema": "#/entities/Transaction",
+      "description": "Real-time user expense and revenue streams"
+    },
+    "/profiles/{userId}/budgets/{budgetId}": {
+      "schema": "#/entities/Budget",
+      "description": "User limits per category"
+    },
+    "/profiles/{userId}/alerts/{alertId}": {
+      "schema": "#/entities/Alert",
+      "description": "User personalized saving alerts"
+    }
+  }
+}
