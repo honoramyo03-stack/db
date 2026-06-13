@@ -37,7 +37,9 @@ import {
   Download,
   Share,
   Plus,
-  Flame
+  Flame,
+  Trash2,
+  AlertTriangle
 } from 'lucide-react';
 import { auth } from './firebase.ts';
 import { FirebaseProject, WebApp, AndroidApp, IosApp, WebAppConfig, FirestoreDatabase } from './types.ts';
@@ -69,6 +71,13 @@ export default function App() {
     message: string;
     details?: string;
   } | null>(null);
+
+  // Firestore Database direct initialization states
+  const [creatingDbId, setCreatingDbId] = useState('(default)');
+  const [creatingDbLocation, setCreatingDbLocation] = useState('eur3');
+  const [creatingDbError, setCreatingDbError] = useState<string | null>(null);
+  const [isDbCreationLoading, setIsDbCreationLoading] = useState(false);
+  const [showCreateDbForm, setShowCreateDbForm] = useState(false);
   
   // App Config and Copy Feedback state
   const [appConfigs, setAppConfigs] = useState<Record<string, WebAppConfig>>({});
@@ -77,8 +86,10 @@ export default function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Firestore Live Explorer States
-  const [activeProjectTab, setActiveProjectTab] = useState<'apps' | 'data'>('apps');
+  const [activeProjectTab, setActiveProjectTab] = useState<'apps' | 'data' | 'danger'>('apps');
   const [selectedDatabaseId, setSelectedDatabaseId] = useState<string>('(default)');
+  const [isDeletingProjectNow, setIsDeletingProjectNow] = useState(false);
+  const [isDeletingDbId, setIsDeletingDbId] = useState<string | null>(null);
 
   // Theme support
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -358,13 +369,152 @@ export default function App() {
         setProjectError({
           type: 'warning',
           message: "La base de données Firestore ne semble pas encore active ou accessible sur ce projet.",
-          details: "Veuillez activer l'API Cloud Firestore dans la console Google Cloud de votre projet, et créer une instance de base de données en mode Production ou de Test."
+          details: "Veuillez vous assurer que l'API Cloud Firestore est active pour ce projet dans votre console GCP, ou initialisez la base de données (default) directement depuis l'onglet de gestion ci-dessous !"
         });
       }
     } catch (err) {
       console.error("Erreur générale lors du chargement du projet :", err);
     } finally {
       setIsLoadingProjectDetails(false);
+    }
+  };
+
+  // Direct 1-click Firestore database creation handler
+  const handleCreateFirestoreDatabase = async () => {
+    if (!selectedProject || !accessToken) return;
+    setIsDbCreationLoading(true);
+    setCreatingDbError(null);
+    try {
+      const dbIdToCreate = creatingDbId.trim() || '(default)';
+      const res = await fetch(`https://firestore.googleapis.com/v1/projects/${selectedProject.projectId}/databases?databaseId=${encodeURIComponent(dbIdToCreate)}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          locationId: creatingDbLocation,
+          type: 'FIRESTORE_ONLY',
+          concurrencyMode: 'OPTIMISTIC'
+        })
+      });
+
+      if (!res.ok) {
+        const errPayload = await res.json().catch(() => ({}));
+        throw new Error(errPayload.error?.message || `Erreur d'initialisation de la base (Code ${res.status}).`);
+      }
+
+      // Refresh project to load databases
+      await handleSelectProject(selectedProject);
+      // Reset creation field and hide form if successful
+      setCreatingDbId('(default)');
+      setShowCreateDbForm(false);
+    } catch (err: any) {
+      console.error("Erreur lors de l'initialisation de la base Firestore:", err);
+      setCreatingDbError(err.message || "L'initialisation a échoué. Assurez-vous d'avoir accepté les conditions de service de Firebase Console.");
+    } finally {
+      setIsDbCreationLoading(false);
+    }
+  };
+
+  // Delete database handler
+  const handleDeleteFirestoreDatabase = async (databaseId: string) => {
+    if (!selectedProject || !accessToken) return;
+    const dbName = databaseId === '(default)' ? '(default)' : databaseId;
+    if (!window.confirm(`ATTENTION : Êtes-vous certain de vouloir supprimer DÉFINITIVEMENT la base de données Firestore "${dbName}" ? Toutes vos données, collections et règles associées seront détruites à jamais !`)) {
+      return;
+    }
+
+    setIsDeletingDbId(databaseId);
+    try {
+      const res = await fetch(`https://firestore.googleapis.com/v1/projects/${selectedProject.projectId}/databases/${dbName}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`
+        }
+      });
+
+      if (!res.ok) {
+        const errPayload = await res.json().catch(() => ({}));
+        throw new Error(errPayload.error?.message || `Erreur de suppression (Code ${res.status}).`);
+      }
+
+      // Re-fetch project databases list to reflect changes
+      await handleSelectProject(selectedProject);
+      alert(`La base de données Firestore "${dbName}" a été supprimée avec succès !`);
+    } catch (err: any) {
+      console.error("Erreur de suppression de la base Firestore:", err);
+      alert(`Échec de la suppression : ${err.message}`);
+    } finally {
+      setIsDeletingDbId(null);
+    }
+  };
+
+  // Delete Google Cloud / Firebase Project handler
+  const handleDeleteProject = async (projectId: string) => {
+    if (!accessToken) return;
+    const confirmInput = window.prompt(`⚠️ ZONE DE DANGER CRITIQUE ⚠️\nVoulez-vous vraiment SUPPRIMER ENTIÈREMENT le projet "${projectId}" ?\nCette action fermera définitivement toutes les ressources, applications et bases de données associées sur Google Cloud Platform !\n\nPour confirmer, saisissez exactement l'identifiant du projet ci-dessous :`);
+    if (confirmInput !== projectId) {
+      if (confirmInput !== null) {
+        alert("L'identifiant saisi ne correspond pas. Suppression annulée.");
+      }
+      return;
+    }
+
+    setIsDeletingProjectNow(true);
+    try {
+      // 1. Try Cloud Resource Manager API v1 first
+      let res = await fetch(`https://cloudresourcemanager.googleapis.com/v1/projects/${projectId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`
+        }
+      });
+
+      // 2. If v1 fails, fallback to Cloud Resource Manager API v3
+      if (!res.ok) {
+        console.warn("L'API CRM v1 a échoué ou n'est pas activée. Tentative avec CRM v3...");
+        const resV3 = await fetch(`https://cloudresourcemanager.googleapis.com/v3/projects/${projectId}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`
+          }
+        });
+
+        if (resV3.ok) {
+          res = resV3;
+        } else {
+          // Parse both error response payloads using robust text-then-JSON extraction
+          const txtV1 = await res.text().catch(() => "");
+          const txtV3 = await resV3.text().catch(() => "");
+          
+          let errMsg = "";
+          try {
+            const jsonV3 = JSON.parse(txtV3);
+            errMsg = jsonV3.error?.message || errMsg;
+          } catch(e) {}
+          
+          if (!errMsg) {
+            try {
+              const jsonV1 = JSON.parse(txtV1);
+              errMsg = jsonV1.error?.message || errMsg;
+            } catch(e) {}
+          }
+          
+          const finalErrorMsg = errMsg || 
+            `Erreur d'accès ou API de gestion désactivée (V1: Code ${res.status}, V3: Code ${resV3.status}). Veuillez vous assurer d'avoir activé "Cloud Resource Manager API" sur cette console GCP et d'être propriétaire du projet.`;
+          throw new Error(finalErrorMsg);
+        }
+      }
+
+      alert(`Le projet "${projectId}" a été placé dans la file d'attente de suppression (suppression complète sous 30 jours).`);
+      setSelectedProject(null);
+      await fetchFirebaseProjects();
+    } catch (err: any) {
+      console.error("Erreur de suppression du projet GCP:", err);
+      alert(`Échec de la suppression du projet : ${err.message}`);
+    } finally {
+      setIsDeletingProjectNow(false);
     }
   };
 
@@ -915,13 +1065,13 @@ export default function App() {
                     )}
 
                     {/* INTERACTIVE NAVIGATION TABS */}
-                    <div className={`flex border-b text-xs transition-all ${isDark ? 'border-slate-805 border-slate-800' : 'border-slate-150'}`}>
+                    <div className={`flex border-b text-xs transition-all ${isDark ? 'border-slate-850 border-slate-800' : 'border-slate-150'}`}>
                       <button
                         onClick={() => setActiveProjectTab('apps')}
                         className={`px-5 py-3.5 font-bold border-b-2 transition-all flex items-center gap-2 outline-hidden cursor-pointer ${
                           activeProjectTab === 'apps' 
                             ? 'border-amber-500 text-amber-500' 
-                            : `border-transparent ${isDark ? 'text-slate-400 hover:text-slate-205 hover:text-slate-300' : 'text-slate-500 hover:text-slate-800'}`
+                            : `border-transparent ${isDark ? 'text-slate-400 hover:text-slate-300' : 'text-slate-500 hover:text-slate-800'}`
                         }`}
                       >
                         <Layers className="h-4 w-4" /> Applications & SDKs
@@ -932,10 +1082,21 @@ export default function App() {
                         className={`px-5 py-3.5 font-bold border-b-2 transition-all flex items-center gap-2 outline-hidden cursor-pointer ${
                           activeProjectTab === 'data' 
                             ? 'border-amber-500 text-amber-500' 
-                            : `border-transparent ${isDark ? 'text-slate-400 hover:text-slate-205 hover:text-slate-300' : 'text-slate-500 hover:text-slate-800'}`
+                            : `border-transparent ${isDark ? 'text-slate-400 hover:text-slate-300' : 'text-slate-500 hover:text-slate-800'}`
                         }`}
                       >
                         <Database className="h-4 w-4" /> Explorateur Firestore (Écriture)
+                      </button>
+
+                      <button
+                        onClick={() => setActiveProjectTab('danger')}
+                        className={`px-5 py-3.5 font-bold border-b-2 transition-all flex items-center gap-2 outline-hidden cursor-pointer ${
+                          activeProjectTab === 'danger' 
+                            ? 'border-rose-500 text-rose-500' 
+                            : `border-transparent ${isDark ? 'text-slate-400 hover:text-slate-300' : 'text-slate-500 hover:text-slate-800'}`
+                        }`}
+                      >
+                        <Trash2 className="h-4 w-4" /> Zone de danger
                       </button>
                     </div>
 
@@ -952,6 +1113,111 @@ export default function App() {
                           databaseId={selectedDatabaseId} 
                           theme={theme}
                         />
+                      </div>
+                    ) : activeProjectTab === 'danger' && accessToken ? (
+                      <div className="space-y-6 pt-2">
+                        <div className={`p-6 rounded-3xl border ${isDark ? 'bg-slate-950/40 border-rose-500/20' : 'bg-rose-50/20 border-rose-100'}`}>
+                          <div className="flex gap-4">
+                            <div className="p-3 bg-rose-500/10 text-rose-500 rounded-2xl h-fit shrink-0">
+                              <AlertTriangle className="h-6 w-6" />
+                            </div>
+                            <div className="space-y-1.5">
+                              <h3 className={`font-bold text-sm ${isDark ? 'text-white' : 'text-slate-900'}`}>Zone de danger ultime & Suppressions</h3>
+                              <p className="text-xs text-slate-400 leading-relaxed font-sans font-medium">
+                                Les actions ci-dessous sont irréversibles et détruisent des ressources cloud réelles en temps réel. Soyez extrêmement prudent et vérifiez vos identifiants avant de valider.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* SUBSECTION 1: DELETE FIRESTORE DATABASES */}
+                        <div className={`border p-6 rounded-3xl space-y-4 ${isDark ? 'bg-slate-955 bg-slate-950/20 border-slate-800' : 'bg-slate-50/50 border-slate-200'}`}>
+                          <div className="space-y-1">
+                            <h4 className={`font-bold text-xs uppercase tracking-wider font-mono flex items-center gap-2 ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                              <Database className="h-4 w-4 text-rose-500" /> Suppression de base de données Firestore
+                            </h4>
+                            <p className="text-xs text-slate-450 text-slate-400 font-sans font-medium">
+                              Destruction d'instance Firestore et de toutes les tables/collections hébergées.
+                            </p>
+                          </div>
+
+                          {databases.length === 0 ? (
+                            <p className="text-xs text-slate-450 text-slate-400 italic font-sans font-medium">Aucune base de données active n'a été répertoriée sur ce projet.</p>
+                          ) : (
+                            <div className="grid gap-2">
+                              {databases.map((dbSnap) => {
+                                const dbId = dbSnap.name.split('/').pop() || '(default)';
+                                const isDeleting = isDeletingDbId === dbId;
+                                return (
+                                  <div key={dbSnap.name} className={`border p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-all ${
+                                    isDark ? 'bg-slate-950/40 border-slate-800' : 'bg-white border-slate-150'
+                                  }`}>
+                                    <div className="flex items-center gap-3">
+                                      <div className={`p-2.5 rounded-xl shrink-0 transition-all ${isDark ? 'bg-rose-500/10 text-rose-500' : 'bg-rose-50 text-rose-550 text-rose-500'}`}>
+                                        <Database className="h-4.5 w-4.5" />
+                                      </div>
+                                      <div>
+                                        <h5 className={`font-bold text-xs font-mono ${isDark ? 'text-slate-200' : 'text-slate-900'}`}>
+                                          {dbId}
+                                        </h5>
+                                        <p className="text-[10px] text-slate-400 mt-0.5 font-mono">
+                                          Localisation : {dbSnap.locationId} | Statut : {dbSnap.state}
+                                        </p>
+                                      </div>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      disabled={isDeleting}
+                                      onClick={() => handleDeleteFirestoreDatabase(dbId)}
+                                      className="py-1.5 px-3 bg-rose-500 hover:bg-rose-600 disabled:opacity-50 text-white text-[10px] font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-[0.98]"
+                                    >
+                                      {isDeleting ? (
+                                        <>
+                                          <RefreshCw className="h-3.5 w-3.5 animate-spin" /> Suppression...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Trash2 className="h-3.5 w-3.5" /> Supprimer la base
+                                        </>
+                                      )}
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* SUBSECTION 2: GCP PROJECT COMPLETE DELETION */}
+                        <div className={`border p-6 rounded-3xl space-y-4 ${isDark ? 'bg-slate-955 bg-slate-950/20 border-slate-800' : 'bg-slate-50/50 border-slate-200'}`}>
+                          <div className="space-y-1">
+                            <h4 className={`font-bold text-xs uppercase tracking-wider font-mono flex items-center gap-2 ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                              <Layers className="h-4 w-4 text-rose-500" /> Suppression intégrale du projet Google Cloud & Firebase
+                            </h4>
+                            <p className="text-xs text-slate-400 font-sans font-medium leading-relaxed">
+                              Cette action placera le projet GCP <span className="font-mono text-amber-500 font-bold">"{selectedProject.projectId}"</span> en suppression immédiate. Toutes les ressources et données GCP/Firebase associées seront temporairement bloquées puis définitivement détruites.
+                            </p>
+                          </div>
+
+                          <div className="pt-2">
+                            <button
+                              type="button"
+                              disabled={isDeletingProjectNow}
+                              onClick={() => handleDeleteProject(selectedProject.projectId)}
+                              className="py-3 px-5 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 disabled:opacity-50 text-white text-xs font-bold rounded-2xl transition-all flex items-center gap-2 cursor-pointer shadow-md"
+                            >
+                              {isDeletingProjectNow ? (
+                                <>
+                                  <RefreshCw className="h-4 w-4 animate-spin text-white" /> Suppression du projet GCP...
+                                </>
+                              ) : (
+                                <>
+                                  <Trash2 className="h-4 w-4" /> Supprimer définitivement le Projet
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     ) : (
                       <div className="space-y-6">
@@ -1096,15 +1362,153 @@ export default function App() {
 
                         {/* DATABASES SECTION */}
                         <div>
-                          <h4 className="font-bold text-xs uppercase tracking-wider text-slate-400 mb-3 font-mono">
-                            Bases de données Firestore ({databases.length})
-                          </h4>
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                            <h4 className="font-bold text-xs uppercase tracking-wider text-slate-400 font-mono">
+                              Bases de données Firestore ({databases.length})
+                            </h4>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowCreateDbForm(!showCreateDbForm);
+                                setCreatingDbId(databases.length === 0 ? '(default)' : '');
+                                setCreatingDbError(null);
+                              }}
+                              className={`text-[10px] font-bold px-3 py-1.5 rounded-xl border transition-all cursor-pointer flex items-center gap-1.5 active:scale-[0.98] ${
+                                showCreateDbForm 
+                                  ? 'bg-rose-500/10 hover:bg-rose-500/20 border-rose-500/25 text-rose-500'
+                                  : 'bg-amber-500 hover:bg-amber-600 text-slate-950 border-transparent shadow-xs'
+                              }`}
+                            >
+                              {showCreateDbForm ? (
+                                <>Fermer la création</>
+                              ) : (
+                                <>
+                                  <Plus className="h-3.5 w-3.5" /> Nouvelle base de données
+                                </>
+                              )}
+                            </button>
+                          </div>
 
-                          {databases.length === 0 ? (
-                            <div className={`border rounded-2xl p-5 text-center text-xs transition-all ${
-                              isDark ? 'bg-slate-950 border-slate-805/45 text-slate-500' : 'bg-slate-50 border-slate-150 text-slate-400'
+                          {/* Dynamic Database Creation Form */}
+                          {showCreateDbForm && (
+                            <div className={`border rounded-3xl p-6 mb-5 transition-all animate-in fade-in slide-in-from-top-3 duration-200 ${
+                              isDark ? 'bg-slate-950/40 border-slate-800' : 'bg-slate-50 border-slate-200'
                             }`}>
-                              Aucune base de données Firestore explicite n'a été trouvée ou elle est configurée à l'état par défaut standard.
+                              <div className="max-w-md mx-auto space-y-4">
+                                <div className="text-center space-y-1">
+                                  <Database className="h-7 w-7 text-amber-500 mx-auto animate-bounce" />
+                                  <h5 className={`font-bold text-sm ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
+                                    Créer une base de données Firestore
+                                  </h5>
+                                  <p className="text-[11px] text-slate-400">
+                                    Définissez le nom unique de votre base ainsi que sa localisation géographique sur Google Cloud Platform.
+                                  </p>
+                                </div>
+
+                                <div className={`p-5 rounded-2xl border text-left space-y-4 ${
+                                  isDark ? 'bg-slate-950 border-slate-805/75' : 'bg-white border-slate-150'
+                                }`}>
+                                  <div className="space-y-1.5">
+                                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block font-mono">
+                                      Identifiant Unique (Database ID)
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={creatingDbId}
+                                      onChange={(e) => setCreatingDbId(e.target.value)}
+                                      placeholder="(default)"
+                                      className={`w-full border rounded-xl px-3 py-2 text-xs font-semibold focus:outline-hidden focus:ring-1 focus:ring-amber-500 transition-all font-mono ${
+                                        isDark ? 'bg-slate-900 border-slate-805 text-white' : 'bg-slate-50 border-slate-200 text-slate-800'
+                                      }`}
+                                    />
+                                    <p className="text-[9px] text-slate-400 leading-normal font-sans">
+                                      La base principale du projet doit s'appeler <strong className="font-bold font-mono text-amber-500">(default)</strong>. Les bases secondaires peuvent avoir des identifiants personnalisés (ex: <code className="font-mono bg-slate-100 dark:bg-slate-800 px-1 rounded">db-prod</code>).
+                                    </p>
+                                  </div>
+
+                                  <div className="space-y-1.5 font-sans">
+                                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block font-mono">
+                                      Emplacement Géographique
+                                    </label>
+                                    <select
+                                      value={creatingDbLocation}
+                                      onChange={(e) => setCreatingDbLocation(e.target.value)}
+                                      className={`w-full border rounded-xl px-3 py-2 text-xs font-semibold focus:outline-hidden focus:ring-1 focus:ring-amber-500 transition-all ${
+                                        isDark ? 'bg-slate-900 border-slate-850 text-white' : 'bg-slate-50 border-slate-200 text-slate-800'
+                                      }`}
+                                    >
+                                      <option value="eur3">Europe (eur3 - Multi-région - Conseillé)</option>
+                                      <option value="nam5">Amérique du Nord (nam5 - Multi-région)</option>
+                                      <option value="us-central1">États-Unis central (Regional)</option>
+                                      <option value="europe-west1">Belgique (europe-west1 - Regional)</option>
+                                      <option value="europe-west3">Francfort (europe-west3 - Regional)</option>
+                                    </select>
+                                  </div>
+
+                                  {creatingDbError && (
+                                    <div className="p-3 bg-rose-50 border border-rose-100 text-rose-750 dark:bg-rose-950/20 dark:border-rose-900/30 dark:text-rose-300 text-[11px] rounded-xl font-medium leading-relaxed font-sans">
+                                      {creatingDbError}
+                                    </div>
+                                  )}
+
+                                  <div className="flex gap-2 font-sans">
+                                    <button
+                                      type="button"
+                                      onClick={() => setShowCreateDbForm(false)}
+                                      className={`w-1/3 py-2.5 text-xs font-bold rounded-2xl transition-all border cursor-pointer ${
+                                        isDark ? 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-white' : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700'
+                                      }`}
+                                    >
+                                      Annuler
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={handleCreateFirestoreDatabase}
+                                      disabled={isDbCreationLoading || !creatingDbId.trim()}
+                                      className="w-2/3 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 text-xs font-bold rounded-2xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
+                                    >
+                                      {isDbCreationLoading ? (
+                                        <>
+                                          <RefreshCw className="h-4 w-4 animate-spin text-slate-950" />
+                                          Création en cours...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Plus className="h-4 w-4" /> Créer la base
+                                        </>
+                                      )}
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {databases.length === 0 && !showCreateDbForm ? (
+                            <div className={`border rounded-3xl p-6 transition-all ${
+                              isDark ? 'bg-slate-955/30 border-slate-800' : 'bg-slate-50/50 border-slate-200'
+                            }`}>
+                              <div className="max-w-md mx-auto text-center space-y-4 font-sans">
+                                <Database className="h-8 w-8 text-amber-500 mx-auto animate-pulse" />
+                                <div className="space-y-1">
+                                  <h5 className={`font-bold text-sm ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
+                                    Initialiser la base Firestore (default)
+                                  </h5>
+                                  <p className="text-xs text-slate-400 leading-relaxed">
+                                    Aucune base de données Firestore n'est encore active sur ce projet Google Cloud. Créez-la instantanément en cliquant sur le bouton ci-dessous.
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setCreatingDbId('(default)');
+                                    setShowCreateDbForm(true);
+                                  }}
+                                  className="mx-auto py-2 px-4 bg-amber-500 hover:bg-amber-605 bg-amber-505 hover:bg-amber-600 text-slate-950 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 active:scale-[0.98]"
+                                >
+                                  <Plus className="h-4 w-4" /> Configurer la base par défaut
+                                </button>
+                              </div>
                             </div>
                           ) : (
                             <div className="space-y-2">
@@ -1148,6 +1552,21 @@ export default function App() {
                                         }`}
                                       >
                                         Inspecter & Éditer <ChevronRight className="h-3 w-3" />
+                                      </button>
+
+                                      <button
+                                        onClick={() => handleDeleteFirestoreDatabase(dbId)}
+                                        disabled={isDeletingDbId === dbId}
+                                        className={`p-2 rounded-xl text-rose-500 hover:text-rose-600 hover:bg-rose-500/10 cursor-pointer transition-all ${
+                                          isDeletingDbId === dbId ? 'opacity-50' : ''
+                                        }`}
+                                        title="Supprimer définitivement cette base de données"
+                                      >
+                                        {isDeletingDbId === dbId ? (
+                                          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        )}
                                       </button>
                                     </div>
                                   </div>
