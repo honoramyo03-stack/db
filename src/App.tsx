@@ -35,11 +35,14 @@ import {
   Sun,
   Moon,
   Download,
-  Share
+  Share,
+  Plus,
+  Flame
 } from 'lucide-react';
 import { auth } from './firebase.ts';
 import { FirebaseProject, WebApp, AndroidApp, IosApp, WebAppConfig, FirestoreDatabase } from './types.ts';
 import FirestoreExplorer from './components/FirestoreExplorer.tsx';
+import ProjectWizard from './components/ProjectWizard.tsx';
 
 export default function App() {
   // Authentication state
@@ -55,11 +58,17 @@ export default function App() {
   
   // Selected project state
   const [selectedProject, setSelectedProject] = useState<FirebaseProject | null>(null);
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [isLoadingProjectDetails, setIsLoadingProjectDetails] = useState(false);
   const [webApps, setWebApps] = useState<WebApp[]>([]);
   const [androidApps, setAndroidApps] = useState<AndroidApp[]>([]);
   const [iosApps, setIosApps] = useState<IosApp[]>([]);
   const [databases, setDatabases] = useState<FirestoreDatabase[]>([]);
+  const [projectError, setProjectError] = useState<{
+    type: 'warning' | 'error';
+    message: string;
+    details?: string;
+  } | null>(null);
   
   // App Config and Copy Feedback state
   const [appConfigs, setAppConfigs] = useState<Record<string, WebAppConfig>>({});
@@ -136,11 +145,33 @@ export default function App() {
       setUser(currentUser);
       setAuthLoading(false);
       
-      // If signed out, clean token and projects
-      if (!currentUser) {
+      if (currentUser) {
+        // Try restoring token if it exists and hasn't expired yet
+        const savedToken = localStorage.getItem('portal-google-token');
+        const savedExp = localStorage.getItem('portal-google-token-exp');
+        const savedUid = localStorage.getItem('portal-google-user-uid');
+        
+        if (savedToken && savedExp && savedUid === currentUser.uid) {
+          const isExpired = Date.now() > Number(savedExp);
+          if (!isExpired) {
+            setAccessToken(savedToken);
+            await fetchFirebaseProjects(savedToken);
+          } else {
+            // Token expired, clear it
+            localStorage.removeItem('portal-google-token');
+            localStorage.removeItem('portal-google-token-exp');
+            localStorage.removeItem('portal-google-user-uid');
+            setAuthError("Votre session d'accès Google Cloud s'est terminée. Veuillez vous reconnecter pour rafraîchir les autorisations.");
+          }
+        }
+      } else {
+        // If signed out, clean token and projects
         setAccessToken(null);
         setProjects([]);
         setSelectedProject(null);
+        localStorage.removeItem('portal-google-token');
+        localStorage.removeItem('portal-google-token-exp');
+        localStorage.removeItem('portal-google-user-uid');
       }
     });
     return () => unsubscribe();
@@ -194,6 +225,7 @@ export default function App() {
     // Read-Write scopes for Full Firestore Explorer Writes & Modifications
     provider.addScope('https://www.googleapis.com/auth/datastore');
     provider.addScope('https://www.googleapis.com/auth/cloud-platform');
+    provider.addScope('https://www.googleapis.com/auth/firebase');
 
     try {
       const result = await signInWithPopup(auth, provider);
@@ -204,6 +236,13 @@ export default function App() {
       
       const token = credential.accessToken;
       setAccessToken(token);
+      
+      // Persist to localStorage for page-refreshes (approx. 1 hour duration)
+      const expirationTime = Date.now() + 3550 * 1000;
+      localStorage.setItem('portal-google-token', token);
+      localStorage.setItem('portal-google-token-exp', expirationTime.toString());
+      localStorage.setItem('portal-google-user-uid', result.user.uid);
+      
       setSelectedProject(null);
       
       // Fetch list instantly
@@ -225,6 +264,9 @@ export default function App() {
       setAccessToken(null);
       setProjects([]);
       setSelectedProject(null);
+      localStorage.removeItem('portal-google-token');
+      localStorage.removeItem('portal-google-token-exp');
+      localStorage.removeItem('portal-google-user-uid');
     } catch (e) {
       console.error("Échec de la déconnexion", e);
     }
@@ -233,6 +275,7 @@ export default function App() {
   // Load details of the clicked project
   const handleSelectProject = async (project: FirebaseProject) => {
     setSelectedProject(project);
+    setIsCreatingProject(false);
     setIsLoadingProjectDetails(true);
     setWebApps([]);
     setAndroidApps([]);
@@ -240,47 +283,86 @@ export default function App() {
     setDatabases([]);
     setActiveProjectTab('apps');
     setSelectedDatabaseId('(default)');
+    setProjectError(null);
 
     if (!accessToken) return;
 
+    let hasFirebaseError = false;
+    let hasFirestoreError = false;
+
     try {
       // 1. Fetch Web Apps
-      const webRes = await fetch(`https://firebase.googleapis.com/v1beta1/projects/${project.projectId}/webApps`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-      });
-      if (webRes.ok) {
-        const webData = await webRes.json();
-        setWebApps(webData.apps || []);
+      try {
+        const webRes = await fetch(`https://firebase.googleapis.com/v1beta1/projects/${project.projectId}/webApps`, {
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        if (webRes.ok) {
+          const webData = await webRes.json();
+          setWebApps(webData.apps || []);
+        } else if (webRes.status === 404) {
+          hasFirebaseError = true;
+        }
+      } catch (e) {
+        console.warn("webApps fetch failed for projectId :", project.projectId, e);
       }
 
       // 2. Fetch Android Apps
-      const androidRes = await fetch(`https://firebase.googleapis.com/v1beta1/projects/${project.projectId}/androidApps`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-      });
-      if (androidRes.ok) {
-        const androidData = await androidRes.json();
-        setAndroidApps(androidData.apps || []);
+      try {
+        const androidRes = await fetch(`https://firebase.googleapis.com/v1beta1/projects/${project.projectId}/androidApps`, {
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        if (androidRes.ok) {
+          const androidData = await androidRes.json();
+          setAndroidApps(androidData.apps || []);
+        }
+      } catch (e) {
+        console.warn("androidApps fetch failed for projectId :", project.projectId, e);
       }
 
       // 3. Fetch iOS Apps
-      const iosRes = await fetch(`https://firebase.googleapis.com/v1beta1/projects/${project.projectId}/iosApps`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-      });
-      if (iosRes.ok) {
-        const iosData = await iosRes.json();
-        setIosApps(iosData.apps || []);
+      try {
+        const iosRes = await fetch(`https://firebase.googleapis.com/v1beta1/projects/${project.projectId}/iosApps`, {
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        if (iosRes.ok) {
+          const iosData = await iosRes.json();
+          setIosApps(iosData.apps || []);
+        }
+      } catch (e) {
+        console.warn("iosApps fetch failed for projectId :", project.projectId, e);
       }
 
       // 4. Fetch Firestore databases (using Cloud Resource Manager / Firestore API)
-      const firestoreRes = await fetch(`https://firestore.googleapis.com/v1/projects/${project.projectId}/databases`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-      });
-      if (firestoreRes.ok) {
-        const dbData = await firestoreRes.json();
-        setDatabases(dbData.databases || []);
+      try {
+        const firestoreRes = await fetch(`https://firestore.googleapis.com/v1/projects/${project.projectId}/databases`, {
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        if (firestoreRes.ok) {
+          const dbData = await firestoreRes.json();
+          setDatabases(dbData.databases || []);
+        } else if (firestoreRes.status === 403 || firestoreRes.status === 404) {
+          hasFirestoreError = true;
+        }
+      } catch (e) {
+        console.warn("databases fetch failed for projectId :", project.projectId, e);
+        hasFirestoreError = true;
+      }
+
+      if (hasFirebaseError) {
+        setProjectError({
+          type: 'warning',
+          message: "Ce projet Google Cloud n'a pas encore de fonctionnalités Firebase activées.",
+          details: "Pour utiliser toutes les capacités, rendez-vous sur la console Firebase de ce projet pour l'initialiser, ou assurez-vous d'utiliser notre 'Création de projet complet' ci-dessus."
+        });
+      } else if (hasFirestoreError) {
+        setProjectError({
+          type: 'warning',
+          message: "La base de données Firestore ne semble pas encore active ou accessible sur ce projet.",
+          details: "Veuillez activer l'API Cloud Firestore dans la console Google Cloud de votre projet, et créer une instance de base de données en mode Production ou de Test."
+        });
       }
     } catch (err) {
-      console.error("Erreur lors du chargement des détails du projet:", err);
+      console.error("Erreur générale lors du chargement du projet :", err);
     } finally {
       setIsLoadingProjectDetails(false);
     }
@@ -710,6 +792,23 @@ export default function App() {
                     />
                   </div>
 
+                  {/* Create project shortcut option */}
+                  <button
+                    onClick={() => {
+                      setSelectedProject(null);
+                      setIsCreatingProject(true);
+                    }}
+                    className={`w-full py-2.5 px-4 border border-dashed rounded-2xl flex items-center justify-center gap-2 text-xs font-bold transition-all cursor-pointer ${
+                      isCreatingProject
+                        ? 'border-amber-500 bg-amber-500/10 text-amber-500 dark:text-amber-400'
+                        : isDark
+                          ? 'border-slate-800 hover:border-amber-500 hover:bg-amber-500/5 text-amber-400 hover:text-white'
+                          : 'border-slate-200 hover:border-amber-500 hover:bg-amber-50/50 text-amber-600 hover:text-amber-700'
+                    }`}
+                  >
+                    <Plus className="h-4 w-4 shrink-0" /> Nouveau Projet
+                  </button>
+
                   {/* List of projects container */}
                   <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
                     {isLoadingProjects ? (
@@ -796,6 +895,24 @@ export default function App() {
                         Ouvrir dans la Console <ExternalLink className="h-3.5 w-3.5" />
                       </a>
                     </div>
+
+                    {projectError && (
+                      <div className={`p-4 rounded-2xl border flex gap-3 text-xs leading-relaxed font-sans ${
+                        projectError.type === 'error'
+                          ? 'bg-rose-50 border-rose-100/60 text-rose-700'
+                          : 'bg-amber-500/10 border-amber-500/20 text-slate-700 dark:text-slate-300'
+                      }`}>
+                        <ShieldAlert className={`h-5 w-5 shrink-0 mt-0.5 ${projectError.type === 'error' ? 'text-rose-500' : 'text-amber-500'}`} />
+                        <div>
+                          <p className="font-bold flex items-center gap-1.5 text-slate-900 dark:text-white">
+                            Diagnostic Système : {projectError.message}
+                          </p>
+                          {projectError.details && (
+                            <p className="text-xs mt-1 text-slate-500 dark:text-slate-400 font-medium leading-relaxed">{projectError.details}</p>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     {/* INTERACTIVE NAVIGATION TABS */}
                     <div className={`flex border-b text-xs transition-all ${isDark ? 'border-slate-805 border-slate-800' : 'border-slate-150'}`}>
@@ -1095,15 +1212,42 @@ const firebaseConfig = {
                       </div>
                     )}
                   </div>
+                ) : isCreatingProject && accessToken ? (
+                  <ProjectWizard
+                    accessToken={accessToken}
+                    isDark={isDark}
+                    onCancel={() => setIsCreatingProject(false)}
+                    onCreated={async (newProj) => {
+                      setIsCreatingProject(false);
+                      // Refresh the list
+                      await fetchFirebaseProjects();
+                      // Auto select the new project to load details!
+                      handleSelectProject(newProj);
+                    }}
+                  />
                 ) : (
-                  <div className={`rounded-3xl border p-12 text-center text-slate-400 space-y-3 shadow-xs h-full flex flex-col justify-center min-h-[400px] transition-all duration-300 ${
+                  <div className={`rounded-3xl border p-12 text-center text-slate-400 space-y-6 shadow-xs h-full flex flex-col justify-center min-h-[400px] transition-all duration-300 ${
                     isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-150'
                   }`}>
-                    <HelpCircle className={`h-12 w-12 mx-auto ${isDark ? 'text-slate-700' : 'text-slate-200'}`} format="svg" />
-                    <h3 className={`font-bold font-display text-sm ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Aucun projet sélectionné</h3>
-                    <p className="text-xs text-slate-400 max-w-xs mx-auto leading-relaxed">
-                      Sélectionnez l'un des projets listés dans la colonne de droite pour interroger en direct ses applications associées, ses bases de données Firestore et ses clés d'initialisation de SDK.
-                    </p>
+                    <div className="space-y-3">
+                      <Layers className={`h-12 w-12 mx-auto ${isDark ? 'text-slate-700 font-bold' : 'text-slate-300 font-bold'}`} />
+                      <h3 className={`font-bold font-display text-base ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Aucun projet sélectionné</h3>
+                      <p className="text-xs text-slate-400 max-w-xs mx-auto leading-relaxed">
+                        Sélectionnez l'un des projets listés dans la colonne de droite pour interroger ses applications et explorer sa base Firestore.
+                      </p>
+                    </div>
+
+                    <div className={`h-px w-32 mx-auto ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
+
+                    <div className="space-y-3">
+                      <p className="text-xs text-slate-400 font-medium">Vous pouvez également initier et déployer de nouvelles ressources :</p>
+                      <button
+                        onClick={() => setIsCreatingProject(true)}
+                        className="py-3 px-6 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-xl shadow-md hover:scale-[1.01] active:scale-[0.99] transition-all cursor-pointer flex items-center justify-center gap-2 mx-auto animate-pulse"
+                      >
+                        <Plus className="h-4 w-4" /> Déployer un Nouveau Projet Complet
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>

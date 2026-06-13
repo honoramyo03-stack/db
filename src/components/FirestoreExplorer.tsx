@@ -170,6 +170,12 @@ export default function FirestoreExplorer({ accessToken, projectId, databaseId, 
       });
 
       if (!response.ok) {
+        if (response.status === 403) {
+          throw new Error("L'API Firestore a renvoyé un accès refusé (403). Veuillez vous assurer que la base Firestore (default) existe et que vos règles de sécurité (firestore.rules) autorisent la lecture.");
+        }
+        if (response.status === 404) {
+          throw new Error("Base de données Firestore non trouvée (404). Ce projet n'a peut-être pas encore initialisé Firestore.");
+        }
         throw new Error(`Erreur (${response.status}) au chargement des collections.`);
       }
 
@@ -183,6 +189,7 @@ export default function FirestoreExplorer({ accessToken, projectId, databaseId, 
       }
     } catch (err: any) {
       console.warn("Could not list collections:", err);
+      setApiError(err.message || "Impossible de lister les collections racine.");
       // Fail gracefully - user can still input a custom collection name manually
       setCollections([]);
     } finally {
@@ -508,6 +515,15 @@ export default function FirestoreExplorer({ accessToken, projectId, databaseId, 
             <span>Collections ({collections.length})</span>
             <FolderIcon className="h-3.5 w-3.5" />
           </div>
+
+          {apiError && !selectedCollection && (
+            <div className={`p-3 rounded-xl border text-[11px] font-medium leading-relaxed font-sans ${
+              isDark ? 'bg-rose-950/20 border-rose-500/20 text-rose-300' : 'bg-rose-50 border-rose-100 text-rose-700'
+            }`}>
+              <AlertTriangle className="h-4 w-4 text-rose-500 inline mr-1" />
+              {apiError}
+            </div>
+          )}
 
           {/* Quick Collection Navigator Search Input */}
           <form onSubmit={handleCustomCollectionSearch} className="flex gap-2">
